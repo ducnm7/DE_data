@@ -53,10 +53,10 @@ def get_mongo_client():
         client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
         # Verify connection
         client.server_info()
-        logging.info("✅ Connected to MongoDB")
+        logging.info("Connected to MongoDB")
         return client
     except Exception as e:
-        logging.error(f"❌ Failed to connect to MongoDB: {e}")
+        logging.error(f"Failed to connect to MongoDB: {e}")
         raise
 
 def load_product_id(db):
@@ -122,8 +122,8 @@ class ReactDataParser(HTMLParser):
             if start != -1 and end != -1:
                 try:
                     self.react_data = json.loads(data[start:end])
-                except:
-                    pass
+                except json.JSONDecodeError as e:
+                    logging.debug(f"Failed to parse react_data JSON: {e}")
 
 def extract_react_data(html):
     parser = ReactDataParser()
@@ -156,8 +156,7 @@ def crawl_one(info):
 
             react_data = extract_react_data(res.text)
             if not react_data:
-                logging.info(f"NO PARSED DATA {product_id}")
-            if not react_data:
+                logging.warning(f"NO PARSED DATA {product_id}")
                 raise Exception("No react_data")
 
             time.sleep(random.uniform(0.5, 1.5))
@@ -242,8 +241,8 @@ def crawl_product_information(db, infos):
                 r = future.result()
                 if r:
                     batch.append(r)
-            except:
-                pass
+            except Exception as e:
+                logging.error(f"Error retrieving future result: {e}")
 
     if batch:
         write_mongo_batch(db, batch)
@@ -273,7 +272,7 @@ def main():
         logging.info("✅ DONE")
         
     except Exception as e:
-        logging.error(f"❌ Error in main: {e}")
+        logging.error(f"Error in main: {e}")
         raise
     finally:
         if 'client' in locals():

@@ -46,10 +46,10 @@ def get_mongo_client():
         client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
         # Verify connection
         client.server_info()
-        logging.info("✅ Connected to MongoDB")
+        logging.info("Connected to MongoDB")
         return client
     except Exception as e:
-        logging.error(f"❌ Failed to connect to MongoDB: {e}")
+        logging.error(f"Failed to connect to MongoDB: {e}")
         raise
 
 # =========================
@@ -146,7 +146,11 @@ def load_ranges(csv_file):
                     row[5] if len(row) > 5 else None
                 ))
 
+            except ValueError as e:
+                logging.debug(f"Skipped invalid IP range row: {e}")
+                continue
             except Exception as e:
+                logging.error(f"Unexpected error parsing IP range: {e}")
                 continue
 
     return ranges
@@ -163,40 +167,6 @@ def write_csv(rows, output):
         )
         writer.writeheader()
         writer.writerows(rows)
-
-
-# =========================
-# HANDLE BATCH
-# =========================
-def handle_batch(db, pool, ip_batch):
-    logging.info(f"Processing batch: {len(ip_batch)}")
-
-    chunk_size = 5000
-    chunks = [
-        ip_batch[i:i + chunk_size]
-        for i in range(0, len(ip_batch), chunk_size)
-    ]
-
-    results = pool.map(process_batch, chunks)
-    final_results = [item for sublist in results for item in sublist]
-
-    logging.info(f"Valid results: {len(final_results)}")
-
-    if not final_results:
-        return
-
-    # Mongo upsert (không check trước → nhanh hơn)
-    operations = [
-        UpdateOne({"ip": r["ip"]}, {"$set": r}, upsert=True)
-        for r in final_results
-    ]
-    db.ip_locations.bulk_write(operations, ordered=False)
-
-    # CSV
-    write_csv(final_results, "ip_locations_output.csv")
-
-
-
 
 
 # =========================
@@ -226,10 +196,10 @@ def main():
 
         write_csv(results, "output.csv")
 
-        logging.info("✅ DONE")
+        logging.info("DONE")
         
     except Exception as e:
-        logging.error(f"❌ Error in main: {e}")
+        logging.error(f"Error in main: {e}")
         raise
     finally:
         if 'client' in locals():

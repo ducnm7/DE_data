@@ -5,12 +5,16 @@ Loads and validates sensitive configuration with security best practices
 
 import os
 import logging
+import threading
 from pathlib import Path
 from typing import Tuple, Optional
 
 # Don't log passwords
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("pymongo").setLevel(logging.WARNING)
+
+# Thread-safe singleton lock
+_config_lock = threading.Lock()
 
 
 class SecureConfig:
@@ -120,8 +124,11 @@ _config = None
 
 
 def get_config() -> SecureConfig:
-    """Get global configuration instance"""
+    """Get global configuration instance (thread-safe singleton)"""
     global _config
     if _config is None:
-        _config = SecureConfig()
+        with _config_lock:
+            # Double-check pattern for thread safety
+            if _config is None:
+                _config = SecureConfig()
     return _config
