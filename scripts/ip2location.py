@@ -3,68 +3,54 @@ import csv
 import logging
 from pymongo import MongoClient, UpdateOne
 from multiprocessing import Pool, cpu_count
-from urllib.parse import quote_plus
 import IP2Location
 import socket
 import struct
 from pathlib import Path
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent / ".env"
-    load_dotenv(dotenv_path=env_path)
-except ImportError:
-    logging.warning("python-dotenv not installed. Using system environment variables only.")
+# Import secure configuration
+from secure_config import get_config
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Import secure config
+config = get_config()
+
+# Validate configuration on startup
+if not config.validate():
+    raise RuntimeError("Configuration validation failed. Check your .env file.")
+
+logging.info("✅ Secure configuration loaded")
 
 def ip_to_int(ip):
     return struct.unpack("!I", socket.inet_aton(ip))[0]
 
+
 # =========================
 # CONFIG
 # =========================
-RAW_USER = os.getenv("MONGO_USER", "").strip()
-RAW_PASS = os.getenv("MONGO_PASS", "").strip()
-HOST = os.getenv("MONGO_HOST", "localhost")
-PORT = os.getenv("MONGO_PORT", "27017")
-DB_NAME = os.getenv("DB_NAME", "test")
-IP_DB_PATH = os.getenv("IP2LOCATION_DB")
-
 BATCH_SIZE = 20000
 NUM_WORKERS = cpu_count() * 2
 OUTPUT_FILE = "ip_locations_2.csv"
 
-logging.basicConfig(level=logging.INFO)
-
 # =========================
-# GLOBAL FOR WORKER
+# SECURE MONGODB CONNECTION
 # =========================
-ip_db = None
-
-
-# =========================
-# INIT WORKER (LOAD DB 1 LẦN)
-# =========================
-def init_worker():
-    global ip_db
-    ip_db = IP2Location.IP2Location(IP_DB_PATH)
-
-
-# =========================
-# MONGO URI
-# =========================
-def build_mongo_uri():
-    if not RAW_USER:
-        logging.warning("⚠️  MONGO_USER not set. Connecting without authentication.")
-        return f"mongodb://{HOST}:{PORT}/"
-    
-    if not RAW_PASS:
-        logging.error("❌ MONGO_USER is set but MONGO_PASS is not. Cannot proceed.")
-        raise ValueError("MONGO_PASS environment variable is required when MONGO_USER is set")
-
-    user = quote_plus(RAW_USER)
-    pwd = quote_plus(RAW_PASS)
-    return f"mongodb://{user}:{pwd}@{HOST}:{PORT}/?authSource=test"
+def get_mongo_client():
+    """
+    Create MongoDB client with credentials from secure config
+    """
+    try:
+        mongo_uri = config.get_mongo_uri()
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        # Verify connection
+        client.server_info()
+        logging.info("✅ Connected to MongoDB")
+        return client
+    except Exception as e:
+        logging.error(f"❌ Failed to connect to MongoDB: {e}")
+        raise
 
 # =========================
 # COUNT UNIQUE IPs
@@ -217,25 +203,38 @@ def handle_batch(db, pool, ip_batch):
 # MAIN
 # =========================
 def main():
-    client = MongoClient("mongodb://localhost:27017/")
-    db = client["test"]
+    try:
+        # Get secure MongoDB connection
+        client = get_mongo_client()
+        
+        # Get database name from secure config
+        db_config = config.get_db_config()
+        db = client[db_config["db_name"]]
 
-    print("Loading IPs...")
-    ips = load_ips(db)
+        logging.info("Loading IPs...")
+        ips = load_ips(db)
 
-    print(f"Total IPs: {len(ips)}")
+        logging.info(f"Total IPs: {len(ips)}")
 
-    print("Loading ranges...")
-    ranges = load_ranges("ip2location.csv")
+        logging.info("Loading ranges...")
+        ranges = load_ranges("ip2location.csv")
 
-    print("Running range scan...")
-    results = range_scan(ips, ranges)
+        logging.info("Running range scan...")
+        results = range_scan(ips, ranges)
 
-    print(f"Matched: {len(results)}")
+        logging.info(f"Matched: {len(results)}")
 
-    write_csv(results, "output.csv")
+        write_csv(results, "output.csv")
 
-    print("DONE")
+        logging.info("✅ DONE")
+        
+    except Exception as e:
+        logging.error(f"❌ Error in main: {e}")
+        raise
+    finally:
+        if 'client' in locals():
+            client.close()
+            logging.info("MongoDB connection closed")
 
 
 # =========================

@@ -3,7 +3,6 @@ from html.parser import HTMLParser
 import os
 import logging
 from pymongo import MongoClient, UpdateOne
-from urllib.parse import quote_plus
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -11,22 +10,17 @@ import threading
 import json
 from pathlib import Path
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent / ".env"
-    load_dotenv(dotenv_path=env_path)
-except ImportError:
-    logging.warning("python-dotenv not installed. Using system environment variables only.")
+# Import secure configuration
+from secure_config import get_config
 
 # =========================
 # CONFIG
 # =========================
-RAW_USER = os.getenv("MONGO_USER", "").strip()
-RAW_PASS = os.getenv("MONGO_PASS", "").strip()
-HOST = os.getenv("MONGO_HOST", "localhost")
-PORT = os.getenv("MONGO_PORT", "27017")
-DB_NAME = os.getenv("DB_NAME", "test")
+config = get_config()
+
+# Validate configuration on startup
+if not config.validate():
+    raise RuntimeError("Configuration validation failed. Check your .env file.")
 
 MAX_WORKERS = 8              
 MAX_INFLIGHT = 200          
@@ -34,6 +28,7 @@ BATCH_SIZE = 500
 MAX_RETRY = 3
 
 logging.basicConfig(level=logging.INFO)
+logging.info("✅ Secure configuration loaded")
 
 # =========================
 # THREAD LOCAL SESSION
@@ -48,18 +43,21 @@ def get_session():
 # =========================
 # MONGO
 # =========================
-def build_mongo_uri():
-    if not RAW_USER:
-        logging.warning("⚠️  MONGO_USER not set. Connecting without authentication.")
-        return f"mongodb://{HOST}:{PORT}/"
-    
-    if not RAW_PASS:
-        logging.error("❌ MONGO_USER is set but MONGO_PASS is not. Cannot proceed.")
-        raise ValueError("MONGO_PASS environment variable is required when MONGO_USER is set")
-    
-    user = quote_plus(RAW_USER)
-    pwd = quote_plus(RAW_PASS)
-    return f"mongodb://{user}:{pwd}@{HOST}:{PORT}/?authSource=test"
+def get_mongo_client():
+    """
+    Create MongoDB client with credentials from secure config
+    Credentials are never stored - only used to build URI once
+    """
+    try:
+        mongo_uri = config.get_mongo_uri()
+        client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        # Verify connection
+        client.server_info()
+        logging.info("✅ Connected to MongoDB")
+        return client
+    except Exception as e:
+        logging.error(f"❌ Failed to connect to MongoDB: {e}")
+        raise
 
 def load_product_id(db):
     pipeline = [
@@ -257,17 +255,30 @@ def crawl_product_information(db, infos):
 # MAIN
 # =========================
 def main():
-    client = MongoClient(build_mongo_uri())
-    db = client[DB_NAME]
+    try:
+        # Get secure MongoDB connection
+        client = get_mongo_client()
+        
+        # Get database name from secure config
+        db_config = config.get_db_config()
+        db = client[db_config["db_name"]]
 
-    print("Start crawling...")
-    infos = load_product_id(db)   # STREAM
+        logging.info("Start crawling...")
+        infos = load_product_id(db)   # STREAM
 
-    crawl_product_information(db, infos)
+        crawl_product_information(db, infos)
 
-    db.product_info.create_index([("product_id", 1)], unique=True)
+        db.product_info.create_index([("product_id", 1)], unique=True)
 
-    print("DONE")
+        logging.info("✅ DONE")
+        
+    except Exception as e:
+        logging.error(f"❌ Error in main: {e}")
+        raise
+    finally:
+        if 'client' in locals():
+            client.close()
+            logging.info("MongoDB connection closed")
 
 if __name__ == "__main__":
     main()
