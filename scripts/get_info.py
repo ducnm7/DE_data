@@ -8,7 +8,6 @@ import random
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import threading
 import json
-from pathlib import Path
 
 # Import secure configuration
 from secure_config import get_config
@@ -269,7 +268,7 @@ def main():
 
         db.product_info.create_index([("product_id", 1)], unique=True)
 
-        logging.info("✅ DONE")
+        logging.info("DONE")
         
     except Exception as e:
         logging.error(f"Error in main: {e}")

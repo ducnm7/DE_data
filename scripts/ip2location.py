@@ -1,12 +1,9 @@
-import os
 import csv
 import logging
-from pymongo import MongoClient, UpdateOne
-from multiprocessing import Pool, cpu_count
-import IP2Location
+from pymongo import MongoClient
+from multiprocessing import cpu_count
 import socket
 import struct
-from pathlib import Path
 
 # Import secure configuration
 from secure_config import get_config
