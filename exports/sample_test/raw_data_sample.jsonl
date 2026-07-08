@@ -1,0 +1,2 @@
+{"_id": "raw1", "collection": "view_product_detail", "product_id": "P100", "ip": "8.8.8.8", "timestamp": 1688400000}
+{"_id": "raw2", "collection": "add_to_cart_action", "product_id": "P101", "ip": "1.1.1.1", "timestamp": 1688400300}

@@ -58,43 +58,120 @@ def get_mongo_client():
         logging.error(f"Failed to connect to MongoDB: {e}")
         raise
 
-def load_product_id(db):
-    pipeline = [
-        {
-            "$match": {
-                "collection": {
-                    "$in": [
-                        "view_product_detail",
-                        "select_product_option",
-                        "select_product_option_quality",
-                        "add_to_cart_action",
-                        "product_detail_recommendation_visible",
-                        "product_detail_recommendation_noticed",
-                        "product_view_all_recommend_clicked"
-                    ]
-                },
-                "product_id": {"$exists": True, "$ne": None, "$ne": ""}
-            }
-        },
-        {
-            "$group": {
-                "_id": "$product_id"
-            }
-        },
-        {
-            "$project": {
-                "_id": 0,
-                "product_id": "$_id"
-            }
-        }
+def load_product_data(db):
+    """
+    Load product data from multiple event collections with proper filtering:
+    - From 6 collections: extract product_id (or viewing_product_id if missing) and current_url
+    - From product_view_all_recommend_clicked: extract viewing_product_id and referrer_url
+    - Deduplicate by product_id, keeping one active record per product
+    """
+    
+    # Collections that use product_id/viewing_product_id and current_url
+    product_collections = [
+        "view_product_detail",
+        "select_product_option",
+        "select_product_option_quality",
+        "add_to_cart_action",
+        "product_detail_recommendation_visible",
+        "product_detail_recommendation_noticed"
     ]
-
+    
+    # Collection that uses viewing_product_id and referrer_url
+    recommend_collection = "product_view_all_recommend_clicked"
+    
+    product_data = {}  # Dictionary to store product_id -> {product_id, url}
+    
     try:
+        # ==== FILTER 1: First 6 collections ====
+        pipeline = [
+            {
+                "$match": {
+                    "collection": {"$in": product_collections},
+                    "$or": [
+                        {"product_id": {"$exists": True, "$ne": None, "$ne": ""}},
+                        {"viewing_product_id": {"$exists": True, "$ne": None, "$ne": ""}}
+                    ]
+                }
+            },
+            {
+                "$project": {
+                    "product_id": {
+                        "$cond": [
+                            {"$and": [
+                                {"$ne": ["$product_id", None]},
+                                {"$ne": ["$product_id", ""]}
+                            ]},
+                            "$product_id",
+                            "$viewing_product_id"
+                        ]
+                    },
+                    "current_url": 1,
+                    "timestamp": 1
+                }
+            },
+            {
+                "$match": {
+                    "product_id": {"$exists": True, "$ne": None, "$ne": ""}
+                }
+            }
+        ]
+        
         docs = list(db.summary.aggregate(pipeline, allowDiskUse=True))
-        logging.info(f"Loaded {len(docs)} unique product_ids from MongoDB")
-        return docs
+        logging.info(f"✅ Loaded {len(docs)} records from 6 product collections")
+        
+        for doc in docs:
+            product_id = doc["product_id"]
+            url = doc.get("current_url")
+            # Keep the record with the latest timestamp for each product_id
+            if product_id not in product_data or doc.get("timestamp", 0) > product_data[product_id].get("timestamp", 0):
+                product_data[product_id] = {
+                    "product_id": product_id,
+                    "url": url,
+                    "timestamp": doc.get("timestamp", 0)
+                }
+        
+        # ==== FILTER 2: product_view_all_recommend_clicked collection ====
+        pipeline2 = [
+            {
+                "$match": {
+                    "collection": recommend_collection,
+                    "viewing_product_id": {"$exists": True, "$ne": None, "$ne": ""}
+                }
+            },
+            {
+                "$project": {
+                    "product_id": "$viewing_product_id",
+                    "referrer_url": 1,
+                    "timestamp": 1
+                }
+            }
+        ]
+        
+        docs2 = list(db.summary.aggregate(pipeline2, allowDiskUse=True))
+        logging.info(f"✅ Loaded {len(docs2)} records from product_view_all_recommend_clicked")
+        
+        for doc in docs2:
+            product_id = doc["product_id"]
+            url = doc.get("referrer_url")
+            # Keep the record with the latest timestamp for each product_id
+            if product_id not in product_data or doc.get("timestamp", 0) > product_data[product_id].get("timestamp", 0):
+                product_data[product_id] = {
+                    "product_id": product_id,
+                    "url": url,
+                    "timestamp": doc.get("timestamp", 0)
+                }
+        
+        # Return deduplicated list without timestamp
+        result = [
+            {"product_id": pid, "url": data["url"]} 
+            for pid, data in product_data.items()
+        ]
+        
+        logging.info(f"✅ Total unique products after deduplication: {len(result)}")
+        return result
+        
     except Exception as e:
-        logging.error(f"Failed to load product_ids: {e}")
+        logging.error(f"❌ Failed to load product data: {e}")
         return []
 
 # =========================
@@ -261,14 +338,21 @@ def main():
         db_config = config.get_db_config()
         db = client[db_config["db_name"]]
 
-        logging.info("Start crawling...")
-        infos = load_product_id(db)   # STREAM
-
-        crawl_product_information(db, infos)
+        logging.info("Start filtering and crawling product information...")
+        
+        # Load deduplicated product data with URLs
+        product_data = load_product_data(db)   # Returns list of {product_id, url}
+        
+        if not product_data:
+            logging.warning("No product data found to crawl")
+            return
+        
+        logging.info(f"Starting crawl of {len(product_data)} unique products...")
+        crawl_product_information(db, product_data)
 
         db.product_info.create_index([("product_id", 1)], unique=True)
 
-        logging.info("DONE")
+        logging.info("✅ DONE")
         
     except Exception as e:
         logging.error(f"Error in main: {e}")
